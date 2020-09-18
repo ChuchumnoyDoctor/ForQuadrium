@@ -1,0 +1,135 @@
+/************************************************************* CREATE TABLE *************************************************************/
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[MATRIX_TP]') AND type in (N'U'))
+DROP TABLE [dbo].[MATRIX_TP]
+GO
+
+CREATE TABLE [dbo].[MATRIX_TP](
+	[RowNumber] [int] NULL,
+	[ColumnNumber] [int] NULL,
+	[Val] [float] NULL,
+	[NameTable_OutPut] [nvarchar](50) NULL
+) ON [PRIMARY]
+GO
+
+/*************************************************************INSERT VALUES INTO TABLE *************************************************************/
+
+INSERT INTO [dbo].[MATRIX_TP]
+           ([RowNumber]
+           ,[ColumnNumber]
+           ,[Val]
+           ,[NameTable_OutPut])
+     VALUES
+           
+(1, 1, 0.8, null),
+(1, 2, 0.2, null),
+(1, 3, 0.0, null),
+(1, 4, 0.0, null),
+(2, 1, 0.3, null),
+(2, 2, 0.6, null),
+(2, 3, 0.1, null),
+(2, 4, 0.0, null),
+(3, 1, 1.4, null),
+(3, 2, 0.0, null),
+(3, 3, 0.4, null),
+(3, 4, 0.2, null),
+(4, 1, 0.0, null),
+(4, 2, 0.0, null),
+(4, 3, 0.0, null),
+(4, 4, 1.0, null)
+GO
+
+/************************************************************* CREATE FUNCTION *************************************************************/
+
+
+CREATE OR ALTER   FUNCTION [dbo].[CreateMatrix](@Elevante int)
+RETURNS @OutPutTable TABLE
+(
+	RowNumber int NOT NULL, 
+	ColumnNumber int NOT NULL, 
+	Val float NOT NULL, 
+	NameTable nvarchar(50) NULL
+)
+AS
+BEGIN
+  DECLARE @Top INT; /* MAX Columns */
+  SET @Top = (SELECT MAX(MATRIX.RowNumber) FROM (SELECT * FROM MATRIX_TP) [MATRIX]) 
+  
+  DECLARE @Table_Original TABLE(RowNumber int NOT NULL, ColumnNumber int NOT NULL, Val float NOT NULL, NameTable nvarchar(50) NULL); /* Take same rows for square matrix */
+  insert into @Table_Original SELECT TOP(@Top * @Top) * FROM MATRIX_TP; 
+  
+  DECLARE @Table_Final TABLE(RowNumber int NOT NULL, ColumnNumber int NOT NULL, Val float NOT NULL, NameTable nvarchar(50) NULL); /* Take same rows for square matrix */
+  insert into @Table_Final
+  SELECT Original.RowNumber, 1, Original.Val, 'Final table'
+  FROM (SELECT * FROM @Table_Original) [Original] WHERE Original.ColumnNumber = @Top; /* insert into final table */
+  
+  DECLARE @Table_TEMP_Before TABLE(RowNumber int NOT NULL, ColumnNumber int NOT NULL, Val float NOT NULL, NameTable nvarchar(50) NULL); /* before calculate */
+  insert into @Table_TEMP_Before SELECT * FROM @Table_Original;  
+  
+  DECLARE @Table_TEMP_After TABLE(RowNumber int NOT NULL, ColumnNumber int NOT NULL, Val float NOT NULL, NameTable nvarchar(50) NULL); /* after calculate */
+  
+  INSERT INTO @OutPutTable
+  SELECT [Original].RowNumber,
+		 [Original].ColumnNumber,
+		 [Original].Val,
+		   'In the 1 degree'
+		   FROM (SELECT * FROM @Table_Original) [Original]
+
+  DECLARE @start INT = 2
+  WHILE @start <= @Elevante
+    BEGIN  
+		DELETE FROM @Table_TEMP_After; /* CLEAR @Table_TEMP_After */
+			  insert into @Table_TEMP_After 
+			  SELECT A.RowNumber,
+			   B.ColumnNumber,
+			   SUM(A.Val * B.Val) AS result,
+			   'In the ' + CAST(@start as nvarchar(20)) + ' degree'
+				FROM @Table_TEMP_Before A
+				INNER JOIN @Table_Original B
+				ON A.ColumnNumber = B.RowNumber
+				GROUP BY A.RowNumber, B.ColumnNumber;			  
+
+			    INSERT INTO @OutPutTable
+				SELECT *
+				FROM @Table_TEMP_After /* inserted calculated matrix */
+
+				insert into @Table_Final 
+				SELECT After.RowNumber, @start, After.Val, 'Final table'
+				FROM (SELECT * FROM @Table_TEMP_After) [After] WHERE After.ColumnNumber = @Top; /* insert into final matrix */
+				
+				DELETE FROM @Table_TEMP_Before; /* CLEAR @@Table_TEMP_Before */
+				insert into @Table_TEMP_Before SELECT * FROM @Table_TEMP_After;  
+
+				SET @start = @start + 1
+     END
+
+	 INSERT INTO @OutPutTable
+	 SELECT Final.RowNumber, Final.ColumnNumber, Final.Val, 'Final table'
+				FROM (SELECT * FROM @Table_Final) [Final] /* inserted final matrix */
+	 
+  RETURN;
+END
+
+
+/************************************************************* REALIZE FUNTION *************************************************************/
+
+INSERT INTO MATRIX_TP
+SELECT * FROM [dbo].[CreateMatrix] (6)
+SELECT * FROM [MATRIX_TP]
+GO
+
+
+/*
+Функция не предусматривает не квадратичные матрицы и не полные матрицы. Функция предусматривает повторное использование, оперируя наибольшим индексом строки.
+Разработано и протестировано на SQL Server Management Studio.
+
+Мысли в слух по текущему заданию: сначала собирался передать в саму функцию. Но ни в каком источнике не описывалась передачи динамической таблицы. 
+Динамическую таблицу можно за INSERT'ить самостоятельно из функции, но, в любом случае, нужно было определить кол-во столбцов за ранее, что не удалось. 
+Динамическое кол-во строк можно было бы пройти через цикл. Для финальной таблицы, состоящей из последних столбцов каждой из промежуточной матрицы, 
+возникала проблема создания таблицы с динамическим набора столбцов, т.е. а на в большинстве случаев не будет размерности изначальной матрицы.
+Были идеи сделать через EXEC(Query), но слишком большая марока в допускаемом синтаксисе языка T-SQL.
+Идея решения подсмотрена, но идеально вписывается в рамках обработки динамической матрицы: 
+чтобы на входе была конвертированная матрицы в формате (номер строки, номер столбца, значение ячейки, название матрицы коей принадлежит).
+Такой подход позволял и упростить умножение матрицы на матрицу, где сравниваю их по индексам, а не по перебору строк и столбцов, и уже готовые значения ячеек перемножать и складывать.
+На все это дело ушло 3 часа.
+*/
+
